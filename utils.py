@@ -12,6 +12,7 @@ from tqdm.auto import tqdm
 from datasets import load_dataset, load_from_disk, DatasetDict
 import submodlib.functions as submod_fn
 from sentence_transformers import SentenceTransformer
+from tqdm import tqdm
 
 random.seed(23)
 
@@ -133,18 +134,24 @@ def compute_prompt_embeddings():
         model=SentenceTransformer("thenlper/gte-large")
         for submixture in SUBMIXTURES:
             print(f"Generating embeddings for {submixture} prompts")
-            # submixture_data=load_dataset(f"{HUB_USERNAME}/{submixture}-submix-{CONTEXT_LEN}")["train"]
             submixture_data=DatasetDict.load_from_disk(f"flan2022/{submixture}")["train"]
             prompts=submixture_data["inputs"]
-            # Use a single GPU
-            start_time=time.time()
-            prompts_embeddings=model.encode(
-                sentences=prompts,
-                batch_size=64,
-                device="cuda:0"
-            )
-            end_time=time.time()
-            print(f"Time taken to compute embeddings for {submixture}:", end_time-start_time)
+            pbar = tqdm(total=len(prompts), desc=f"Computing embeddings for {submixture}")
+            prompts_embeddings = []
+            start_time = time.time()
+            for i in range(0, len(prompts), 64):
+                batch = prompts[i:i+64]
+                embeddings = model.encode(
+                    sentences=batch,
+                    batch_size=64,
+                    device="cuda:0"
+                )
+                prompts_embeddings.extend(embeddings)
+                pbar.update(len(batch))
+            pbar.close()
+            end_time = time.time()
+            prompts_embeddings = np.array(prompts_embeddings)
+            print(f"Time taken to compute embeddings for {submixture}:", end_time - start_time)
             print("Embeddings computed. Shape:", prompts_embeddings.shape)
             np.save(f"prompts_embeddings/{submixture}.npy", prompts_embeddings)
     else:
