@@ -10,6 +10,7 @@ import submodlib
 import numpy as np
 from tqdm.auto import tqdm
 from datasets import load_dataset, load_from_disk, DatasetDict
+import datasets  # Ensure datasets module is imported
 import submodlib.functions as submod_fn
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
@@ -110,7 +111,7 @@ def download_flan2022():
         split_ds.save_to_disk('flan2022')
         
     for submixture in SUBMIXTURES:
-        print(f"Loading {submixture} dataset...")
+        print(f"Loading {submixture} dataset...")                   
         dataset = load_from_disk(f"flan2022/{submixture}")
         print(dataset)
 
@@ -206,6 +207,7 @@ def get_task_embeddings(task_indices):
             submixture_embeddings=np.load(f"prompts_embeddings/{submixture}.npy")
             submixture_task_indices=task_indices[submixture]
             all_tasks=list(submixture_task_indices.keys())
+            print(f"The total number of tasks in {submixture} is {len(all_tasks)}")
             pbar=tqdm(range(len(all_tasks)))
             for task in all_tasks:
                 indices=[]
@@ -221,6 +223,7 @@ def get_task_embeddings(task_indices):
         with open("task_embeddings/tasks.pkl", "wb") as f:
             pickle.dump(tasks, f)
         np.save("task_embeddings/tasks_embeddings.npy", embeddings)
+        print(f"total number of tasks: {len(tasks)}")
     return (tasks, embeddings)
 
 def get_task_totals(task_indices):
@@ -324,6 +327,7 @@ def get_task_template_budgets(task_indices, task_budgets):
     CNT=0
     TOTAL_BUDGET=0
     task_template_budgets={}
+    os.makedirs('template_task_budgets', exist_ok=True)
     for submixture in SUBMIXTURES:
         task_template_budgets[submixture]={}
         print(f"Processing {submixture}")
@@ -402,6 +406,8 @@ def get_task_template_budgets(task_indices, task_budgets):
             except Exception as e:
                 print(f"Exception occurred while processing {task} in {submixture}")
                 print(e)
+        with open(f"template_task_budgets/{submixture}.pkl", 'wb') as f:
+            pickle.dump(task_template_budgets[submixture], f)
     assert CNT==TOTAL_BUDGET
     return task_template_budgets
 
@@ -412,9 +418,78 @@ def load_instances_submodular_ordering(submod_fnc_instances):
         for submixture in SUBMIXTURES:
             with open(f"{submod_fnc_instances}_ordering/{submixture}.pkl", "rb") as f:
                 submod_ordering[submixture]=pickle.load(f)
-    except:
-        raise Exception(f"Submodular ordering for instances not found for {submod_fnc_instances}")
+    except FileNotFoundError as e:
+        raise Exception(f"Submodular ordering for instances not found for {submod_fnc_instances} in submixture {submixture}") from e
     return submod_ordering
+
+def get_task_ordering(submod_fnc:str, embeddings:np.array, budget:int):
+    # print("creating similarity kernel...")
+    data_sijs=submodlib.helper.create_kernel(X=embeddings, metric='cosine', method='sklearn') #sijs = similarity kernel i.e. S_ij
+    if submod_fnc=='fl':
+        # print('Instantiating facility location function...')
+        submod_obj=submod_fn.facilityLocation.FacilityLocationFunction(n=embeddings.shape[0], mode='dense', sijs=data_sijs, separate_rep=False)
+    elif submod_fnc=='gc':
+        # print("Instantiating graph cut function...")
+        submod_obj=submod_fn.graphCut.GraphCutFunction(n=embeddings.shape[0], mode='dense', ggsijs=data_sijs, lambdaVal=0.4, separate_rep=False)
+    elif submod_fnc=='logdet':
+        # print('Instantiating log-determinant function...')
+        submod_obj=submod_fn.logDeterminant.LogDeterminantFunction(n=embeddings.shape[0], mode='dense', sijs=data_sijs, lambdaVal=1)
+
+    if budget > 0 and budget < embeddings.shape[0]:
+        greedyList = submod_obj.maximize(budget=budget, optimizer="LazyGreedy", show_progress=True)
+        return greedyList
+
+    else: return None
+
+    
+def get_submodular_ordering(submod_fnc, template_task_budgets):
+    
+    submodular_ordering = {}
+
+    try:
+        for submixture in SUBMIXTURES:
+            with open(f"submodular_ordering/{submixture}.pkl", "rb") as f:
+                submodular_ordering[submixture] = pickle.load(f)
+    except:
+        print('Generating submodular ordering')
+
+        os.makedirs("submodular_ordering", exist_ok=True)
+        for submixture in SUBMIXTURES:
+            submodular_ordering[submixture] = {}  # Initialize submixture level
+            if not os.path.exists(f'submodular_ordering/{submixture}.pkl'):
+                prompt_embeddings = np.load(f"prompts_embeddings/{submixture}.npy")
+                task_indices = pickle.load(open(f'task_indices/{submixture}.pkl', 'rb'))
+                pbar=tqdm(task_indices.keys(), desc=f"Submodular ordering for tasks in {submixture}")
+                for task in task_indices.keys():
+                    if task not in submodular_ordering[submixture]:
+                        submodular_ordering[submixture][task] = {}  # Initialize task level
+                    
+                    for i, template_type in enumerate(TEMPLATE_TYPES):
+                        if template_type not in submodular_ordering[submixture][task]:
+                            submodular_ordering[submixture][task][template_type] = []  # Initialize template_type level
+                        if template_type in task_indices[task].keys():
+                            if task == 'dialog' or 'cot':
+                                indices = random.sample(task_indices[task][template_type], math.floor(0.6 * len(task_indices[task][template_type])))
+                            else:
+                                indices = task_indices[task][template_type]
+                            index_mapping = {i: indices[i] for i in range(len(indices))}
+                            print(f"Number of selected indices in iteration for template {template_type} in {submixture} is {len(indices)}")
+                            embeddings = prompt_embeddings[indices]
+                            
+                            greedyList = get_task_ordering(submod_fnc=submod_fnc, embeddings=embeddings, budget=template_task_budgets[submixture][task][i])
+                            if greedyList is not None:
+                                greedyList_mapped = [(index_mapping[idx], score) for idx, score in greedyList]
+                                sorted_indices = [idx for idx, _ in sorted(greedyList_mapped, key=lambda x: x[1], reverse=True)]
+                                submodular_ordering[submixture][task][template_type] = sorted_indices
+                            else:
+                                continue
+                            pbar.update(1)
+
+                # Save the submodular ordering for this submixture
+                with open(f"submodular_ordering/{submixture}.pkl", 'wb') as f:
+                    pickle.dump(submodular_ordering[submixture], f)
+    
+    return submodular_ordering
 
 def get_subset_indices(submodular_ordering, task_template_budgets, task_indices):
     print("Getting subset of instances from each task based on submodular ordering and task_template_budgets...")
@@ -422,40 +497,85 @@ def get_subset_indices(submodular_ordering, task_template_budgets, task_indices)
     for submixture in SUBMIXTURES:
         indices[submixture]=[]
         submixture_ordering=submodular_ordering[submixture]
-        submixture_task_template_budgets=submixture_task_template_budgets[submixture]
+        submixture_task_template_budgets=task_template_budgets[submixture]
         submixture_task_indices=task_indices[submixture]
         for task in submixture_task_template_budgets.keys():
             for i, template_type in enumerate(TEMPLATE_TYPES):
-                if template_type in submixture_ordering[task]:
-                    task_template_budget=submixture_task_template_budgets[task][i]
-                    if task_template_budget==len(submixture_task_indices[task][template_type]):
-                        indices[submixture].extend(submixture_task_indices[task][template_type])
-                    else:
-                        indices[submixture].extend([idx for idx, _ in submixture_ordering[task][template_type][:task_template_budget]])
+                if template_type in submixture_ordering[task].keys():
+                    # task_template_budget=submixture_task_template_budgets[task][i]
+                    indices[submixture].extend(submixture_ordering[task][template_type])
+                    # if task_template_budget==len(submixture_task_indices[task][template_type]):
+                    #     indices[submixture].extend(submixture_task_indices[task][template_type])
+                    # else:
+                    #     indices[submixture].extend([idx for idx, _ in submixture_ordering[task][template_type][:task_template_budget]])
     return indices
 
 def get_final_dataset(indices):
     print("Getting final dataset that is uploadable to hub...")
-    submixture_train_datasets=[]
-    submixture_val_datasets=[]
+    submixture_train_datasets = []
+    submixture_val_datasets = []
+    
     for submixture in SUBMIXTURES:
-        submixture_data=load_dataset(f"{HUB_USERNAME}/{submixture}-submix-{CONTEXT_LEN}")
-        submixture_train_datasets.append(submixture_data["train"].select(indices[submixture]).remove_columns(["task_source", "task_name", "template_type"]))
-        submixture_val_datasets.append(submixture_data["validation"].remove_columns(["task_source", "task_name", "template_type"]))
-    train_dataset=datasets.concatenate_datasets(submixture_train_datasets)
-    train_dataset=train_dataset.shuffle(seed=23)
-    train_dataset=train_dataset.rename_column("inputs", "prompt")
-    train_dataset=train_dataset.rename_column("targets", "response")
-    val_dataset=datasets.concatenate_datasets(submixture_val_datasets)
-    val_dataset=val_dataset.rename_column("inputs", "prompt")
-    val_dataset=val_dataset.rename_column("targets", "response")
-
-    train_val_dataset=datasets.DatasetDict({
+        submixture_data = DatasetDict.load_from_disk(f"flan2022/{submixture}")
+        
+        # Assuming we are working with the "train" split in each submixture
+        train_data = submixture_data['train']
+        
+        all_indices = set(range(len(train_data)))
+        val_indices = list(all_indices - set(indices[submixture]))
+        
+        submixture_train_datasets.append(
+            train_data.select(indices[submixture]).remove_columns(["task_source", "task_name", "template_type"])
+        )
+        submixture_val_datasets.append(
+            train_data.select(val_indices).remove_columns(["task_source", "task_name", "template_type"])
+        )
+    
+    train_dataset = datasets.concatenate_datasets(submixture_train_datasets)
+    train_dataset = train_dataset.shuffle(seed=23)
+    train_dataset = train_dataset.rename_column("inputs", "prompt")
+    train_dataset = train_dataset.rename_column("targets", "response")
+    
+    val_dataset = datasets.concatenate_datasets(submixture_val_datasets)
+    val_dataset = val_dataset.rename_column("inputs", "prompt")
+    val_dataset = val_dataset.rename_column("targets", "response")
+    
+    train_val_dataset = datasets.DatasetDict({
         "train": train_dataset,
         "validation": val_dataset
     })
 
+    train_val_dataset.save_to_disk('final_dataset')
+
     return train_val_dataset
+
+
+# def get_final_dataset(indices):
+#     print("Getting final dataset that is uploadable to hub...")
+#     submixture_train_datasets=[]
+#     submixture_val_datasets=[]
+#     for submixture in SUBMIXTURES:
+#         submixture_data=DatasetDict.load_from_disk(f"flan2022/{submixture}")
+#         all_indices = set(range(len(submixture_data)))
+#         val_indices = list(all_indices - set(indices[submixture]))
+#         submixture_train_datasets.append(submixture_data.select(indices[submixture]).remove_columns(["task_source", "task_name", "template_type"]))
+#         submixture_val_datasets.append(submixture_data.select(val_indices).remove_columns(["task_source", "task_name", "template_type"]))
+#     train_dataset=datasets.concatenate_datasets(submixture_train_datasets)
+#     train_dataset=train_dataset.shuffle(seed=23)
+#     train_dataset=train_dataset.rename_column("inputs", "prompt")
+#     train_dataset=train_dataset.rename_column("targets", "response")
+#     val_dataset=datasets.concatenate_datasets(submixture_val_datasets)
+#     val_dataset=val_dataset.rename_column("inputs", "prompt")
+#     val_dataset=val_dataset.rename_column("targets", "response")
+
+#     train_val_dataset=datasets.DatasetDict({
+#         "train": train_dataset,
+#         "validation": val_dataset
+#     })
+
+#     train_val_dataset.save_to_disk('final_dataset')
+
+#     return train_val_dataset
 
 def main():
     args=parse_args()
@@ -464,10 +584,10 @@ def main():
     HUB_USERNAME=args.HUB_USERNAME
 
     # Download the FLAN 2022 dataset
-    download_flan2022()
+    # download_flan2022()
 
     # Compute embeddings for all prompts in FLAN 2022
-    compute_prompt_embeddings()
+    # compute_prompt_embeddings()
 
     # Get (task, template_type) -> indices mapping
     task_indices=get_task_indices()
@@ -484,8 +604,11 @@ def main():
     # Get (task, template) budgets
     task_template_budgets=get_task_template_budgets(task_indices, task_budgets)
 
+    # Load or generate submodular ordering
+    submod_ordering = get_submodular_ordering(args.submod_fnc_instances, task_template_budgets)
+
     # Load the submodular ordering of instances in each task
-    submod_ordering=load_instances_submodular_ordering(args.submod_fnc_instances)
+    # submod_ordering=load_instances_submodular_ordering(args.submod_fnc_instances)
 
     # get a list of indices to select based on task_template_budgets
     indices=get_subset_indices(submod_ordering, task_template_budgets, task_indices)

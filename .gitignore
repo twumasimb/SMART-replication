@@ -4,3 +4,7 @@
 /flan2022
 /__pycache__
 /task_indices
+/keys
+/final_dataset
+/submodular_ordering
+/template_task_budgets
