@@ -553,10 +553,10 @@ def main():
     HUB_USERNAME=args.HUB_USERNAME
 
     # Download the FLAN 2022 dataset
-    # download_flan2022()
+    download_flan2022()
 
     # Compute embeddings for all prompts in FLAN 2022
-    # compute_prompt_embeddings()
+    compute_prompt_embeddings()
 
     # Get (task, template_type) -> indices mapping
     task_indices=get_task_indices()
