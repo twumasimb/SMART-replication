@@ -1,81 +1,120 @@
-from transformers import Trainer, TrainingArguments
-from peft import PeftModel, PeftConfig
+# Import libraries
+import os
+import torch
+from trl import SFTTrainer, SFTConfig
+from time import perf_counter
+from transformers import GenerationConfig
+from datasets import load_dataset, Dataset, load_from_disk
+from peft import LoraConfig, AutoPeftModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments
 
-# ...existing code...
+def formatted_prompt(question) -> str:
+    return f"<|start_header_id|>user<|end_header_id|>\n{question}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
 
-def peft_finetuning(model, train_dataset, eval_dataset, output_dir, peft_config):
-    """
-    Perform PEFT finetuning on the given model.
+def formatted_train(input, response):
+    return f"<|start_header_id|>user<|end_header_id|>\n{input}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n{response}<|eot_id|>"
 
-    Args:
-        model: The pre-trained model to be fine-tuned.
-        train_dataset: The dataset for training.
-        eval_dataset: The dataset for evaluation.
-        output_dir: The directory where the model checkpoints will be saved.
-        peft_config: The configuration for PEFT.
-    """
-    # Wrap the model with PEFT
-    peft_model = PeftModel(model, peft_config)
+# Step 3: Define a mapping function to apply the formatting
+def format_data(example):
+    example["text"] = formatted_train(example["prompt"], example["response"])
+    return example
 
-    # Define training arguments
-    training_args = TrainingArguments(
-        output_dir=output_dir,
-        evaluation_strategy="epoch",
+# get the tokenizer and model 
+def get_model_and_tokenizer(model_id):
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer.pad_token=tokenizer.eos_token
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype='float16',
+        bnb_4bit_use_double_quant=True
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id, quantization_config=bnb_config, 
+        attn_implementation="flash_attention_2",
+        device_map='auto'
+    )
+    model.config.use_cache=False
+    model.config.pretraining_tp=1
+    return model, tokenizer
+
+def generate_response(user_input, model, tokenizer):
+    prompt = formatted_prompt(user_input)
+    # inputs = tokenizer([prompt], return_tensors="pt")
+    generation_config = GenerationConfig(penalty_alpha=0.6, do_sample=True,
+        top_k=5, temperature=0.5, repetition_penalty=1.2, 
+        max_new_tokens=60, pad_token_id=tokenizer.eos_token_id
+    )
+    start_time = perf_counter()
+    inputs = tokenizer(prompt, return_tensors="pt").to('cuda')
+    outputs = model.generate(**inputs, generation_config=generation_config)
+    response = (tokenizer.decode(outputs[0], skip_special_tokens=True))
+    generation_time = perf_counter() - start_time
+    print(f"Time taken for inference: {round(generation_time, 2)} seconds.")
+
+    return response
+
+def main():
+    # Define the model you want to finetune
+    model_name = 'Llama-3.2-1B'
+    model_id = f"meta-llama/{model_name}"
+
+    run_name = "Initial Run"
+
+    # Name of the new model
+    output_model=model_name
+    output_dir=f"models/{model_name}"
+
+    # Load dataset from memory
+    ds = load_from_disk('final_dataset')
+
+    # Define the model and tokenizer
+    model, tokenizer = get_model_and_tokenizer(model_id=model_id)
+
+    # Get the training data
+    train_dataset = ds['train'].map(format_data)
+    
+    val_data = ds['validation'].shuffle(seed=42).select(range(5000))
+    val_dataset = val_data.map(format_data)
+
+    peft_config = LoraConfig(
+        r=8, lora_alpha=16, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM"
+    )
+
+    training_arguments = TrainingArguments(
+        output_dir=output_model,
+        per_device_train_batch_size=4,
+        gradient_accumulation_steps=4,
+        warmup_steps=10,
+        optim="adamw_8bit",
+        run_name=run_name,
+        learning_rate=2e-4,
+        lr_scheduler_type="cosine",
         save_strategy="epoch",
-        learning_rate=2e-5,
-        per_device_train_batch_size=64,
-        per_device_eval_batch_size=64,
+        logging_steps=1,
         num_train_epochs=3,
-        weight_decay=0.01,
-        logging_dir=f"{output_dir}/logs",
+        max_steps=250,
+        fp16=True,
+        push_to_hub=False,
+        seed=3407
     )
 
-    # Initialize the Trainer
-    trainer = Trainer(
-        model=peft_model,
-        args=training_args,
+    trainer = SFTTrainer(
+        model=model,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
+        eval_dataset=val_dataset,
+        args=training_arguments,
+        tokenizer=tokenizer,
+        packing=False,
+        peft_config=peft_config,
+        dataset_text_field="text",
+        max_seq_length=1024  
     )
 
-    # Train the model
     trainer.train()
 
-    # Save the final model
-    trainer.save_model(output_dir)
+    model.save_pretrained(output_dir)
+    tokenizer.save_pretrained(output_dir)
 
-# ...existing code...
-
-
-def preprocess_function(examples):
-    prompts_responses=[p+" "+r for p, r in zip(examples["prompt"], examples["response"])]
-    prompts_responses_tokenized=tokenizer(prompts_responses, truncation=True, max_length=max_seq_length)
-    prompts_tokenized=tokenizer(examples["prompt"], truncation=True, max_length=max_seq_length)
-    all_labels=copy.deepcopy(prompts_responses_tokenized["input_ids"])
-    prompts_len=[len(prompt) for prompt in prompts_tokenized["input_ids"]]
-    for labels, prompt_len in zip(all_labels, prompts_len):
-        labels[:prompt_len]=[IGNORE_INDEX]*prompt_len
-    result={k: v for k, v in prompts_responses_tokenized.items()}
-    result["labels"]=all_labels
-    return result
-
-preprocessed_dataset=raw_dataset.map(
-    preprocess_function,
-    batched=True,
-    num_proc=preprocessing_num_workers,
-    load_from_cache_file=not overwrite_cache,
-    remove_columns=raw_dataset_column_names,
-    desc="Preprocessing the raw dataset",
-)
-
-train_dataset=preprocessed_dataset["train"]
-eval_dataset=preprocessed_dataset["validation"]
-
-# DataLoaders creation
-data_collator=DataCollatorForInstructionTuning(tokenizer)
-train_dataloader=DataLoader(
-    train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size, pin_memory=True, num_workers=8
-)
-eval_dataloader=DataLoader(
-    eval_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size, pin_memory=True, num_workers=8
-)
+if __name__ == '__main__':
+    main()

@@ -23,7 +23,7 @@ SUBMIXTURES=[
     "niv2",
     "cot",
     "dialog"
-]
+]  #1841
 
 TEMPLATE_TYPES=[
     "zs_opt",
@@ -468,12 +468,11 @@ def get_submodular_ordering(submod_fnc, template_task_budgets):
                         if template_type not in submodular_ordering[submixture][task]:
                             submodular_ordering[submixture][task][template_type] = []  # Initialize template_type level
                         if template_type in task_indices[task].keys():
-                            if task == 'dialog' or 'cot':
+                            if task == 'dialog' or 'cot': # Take smaller portions so that it doesn't crash the computer.
                                 indices = random.sample(task_indices[task][template_type], math.floor(0.6 * len(task_indices[task][template_type])))
                             else:
                                 indices = task_indices[task][template_type]
                             index_mapping = {i: indices[i] for i in range(len(indices))}
-                            print(f"Number of selected indices in iteration for template {template_type} in {submixture} is {len(indices)}")
                             embeddings = prompt_embeddings[indices]
                             
                             greedyList = get_task_ordering(submod_fnc=submod_fnc, embeddings=embeddings, budget=template_task_budgets[submixture][task][i])
@@ -521,14 +520,11 @@ def get_final_dataset(indices):
         # Assuming we are working with the "train" split in each submixture
         train_data = submixture_data['train']
         
-        all_indices = set(range(len(train_data)))
-        val_indices = list(all_indices - set(indices[submixture]))
-        
         submixture_train_datasets.append(
             train_data.select(indices[submixture]).remove_columns(["task_source", "task_name", "template_type"])
         )
         submixture_val_datasets.append(
-            train_data.select(val_indices).remove_columns(["task_source", "task_name", "template_type"])
+            submixture_data['test'].remove_columns(["task_source", "task_name", "template_type"])
         )
     
     train_dataset = datasets.concatenate_datasets(submixture_train_datasets)
@@ -549,33 +545,6 @@ def get_final_dataset(indices):
 
     return train_val_dataset
 
-
-# def get_final_dataset(indices):
-#     print("Getting final dataset that is uploadable to hub...")
-#     submixture_train_datasets=[]
-#     submixture_val_datasets=[]
-#     for submixture in SUBMIXTURES:
-#         submixture_data=DatasetDict.load_from_disk(f"flan2022/{submixture}")
-#         all_indices = set(range(len(submixture_data)))
-#         val_indices = list(all_indices - set(indices[submixture]))
-#         submixture_train_datasets.append(submixture_data.select(indices[submixture]).remove_columns(["task_source", "task_name", "template_type"]))
-#         submixture_val_datasets.append(submixture_data.select(val_indices).remove_columns(["task_source", "task_name", "template_type"]))
-#     train_dataset=datasets.concatenate_datasets(submixture_train_datasets)
-#     train_dataset=train_dataset.shuffle(seed=23)
-#     train_dataset=train_dataset.rename_column("inputs", "prompt")
-#     train_dataset=train_dataset.rename_column("targets", "response")
-#     val_dataset=datasets.concatenate_datasets(submixture_val_datasets)
-#     val_dataset=val_dataset.rename_column("inputs", "prompt")
-#     val_dataset=val_dataset.rename_column("targets", "response")
-
-#     train_val_dataset=datasets.DatasetDict({
-#         "train": train_dataset,
-#         "validation": val_dataset
-#     })
-
-#     train_val_dataset.save_to_disk('final_dataset')
-
-#     return train_val_dataset
 
 def main():
     args=parse_args()
