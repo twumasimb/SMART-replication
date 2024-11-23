@@ -36,6 +36,7 @@ CONTEXT_LEN=4096
 TEMPERATURE=1
 HUB_TOKEN=None
 HUB_USERNAME=None
+dir = '/mnt/DATA/datasets'
 
 def parse_args():
     parser=argparse.ArgumentParser(description="Get Instructo Dataset from FLAN 2022")
@@ -108,11 +109,11 @@ def download_flan2022():
             })
 
         # Save the split dataset to disk
-        split_ds.save_to_disk('flan2022')
+        split_ds.save_to_disk(f'{dir}/flan2022')
         
     for submixture in SUBMIXTURES:
         print(f"Loading {submixture} dataset...")                   
-        dataset = load_from_disk(f"flan2022/{submixture}")
+        dataset = load_from_disk(f"{dir}/flan2022/{submixture}")
         print(dataset)
 
 def compute_prompt_embeddings():
@@ -135,7 +136,7 @@ def compute_prompt_embeddings():
         model=SentenceTransformer("thenlper/gte-large")
         for submixture in SUBMIXTURES:
             print(f"Generating embeddings for {submixture} prompts")
-            submixture_data=DatasetDict.load_from_disk(f"flan2022/{submixture}")["train"]
+            submixture_data=DatasetDict.load_from_disk(f"{dir}/flan2022/{submixture}")["train"]
             prompts=submixture_data["inputs"]
             pbar = tqdm(total=len(prompts), desc=f"Computing embeddings for {submixture}")
             prompts_embeddings = []
@@ -170,7 +171,7 @@ def get_task_indices():
         os.makedirs("task_indices", exist_ok=True)
         for submixture in SUBMIXTURES:
             print(f"Processing {submixture}")
-            submixture_data=DatasetDict.load_from_disk(f"flan2022/{submixture}")["train"]
+            submixture_data=DatasetDict.load_from_disk(f"{dir}/flan2022/{submixture}")["train"]
             TASKS=list(set(submixture_data['task_name']))  # Convert set to list
             task_labels=submixture_data["task_name"]
             template_types=submixture_data["template_type"]
@@ -515,7 +516,7 @@ def get_final_dataset(indices):
     submixture_val_datasets = []
     
     for submixture in SUBMIXTURES:
-        submixture_data = DatasetDict.load_from_disk(f"flan2022/{submixture}")
+        submixture_data = DatasetDict.load_from_disk(f"{dir}/flan2022/{submixture}")
         
         # Assuming we are working with the "train" split in each submixture
         train_data = submixture_data['train']

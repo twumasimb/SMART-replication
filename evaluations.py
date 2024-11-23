@@ -50,6 +50,11 @@ def evaluate_mmlu(model, tokenizer, dataset):
     accuracy = correct / total
     return accuracy
 
+
+def exact_match(model, tokenizer, dataset):
+    
+    pass
+
 if __name__== "__main__":
     accuracy = evaluate_mmlu(model, tokenizer, dataset)
     print(f"MMLU Accuracy: {accuracy * 100:.2f}%")

@@ -56,7 +56,7 @@ def generate_response(user_input, model, tokenizer):
 
 def main():
     # Define the model you want to finetune
-    model_name = 'Llama-3.2-1B'
+    model_name = 'Llama-3.2-3B'
     model_id = f"meta-llama/{model_name}"
 
     run_name = "Initial Run"
@@ -66,16 +66,20 @@ def main():
     output_dir=f"models/{model_name}"
 
     # Load dataset from memory
-    ds = load_from_disk('final_dataset')
+    ds = load_from_disk('/mnt/DATA/datasets/final_dataset')
 
     # Define the model and tokenizer
     model, tokenizer = get_model_and_tokenizer(model_id=model_id)
 
     # Get the training data
     train_dataset = ds['train'].map(format_data)
+    num_epochs = 3
+    batch_size = 2
+
+    # Calculate the number of iterations
+    num_samples = len(train_dataset)
+    num_iterations = num_epochs * (num_samples // batch_size)
     
-    val_data = ds['validation'].shuffle(seed=42).select(range(5000))
-    val_dataset = val_data.map(format_data)
 
     peft_config = LoraConfig(
         r=8, lora_alpha=16, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM"
@@ -83,7 +87,7 @@ def main():
 
     training_arguments = TrainingArguments(
         output_dir=output_model,
-        per_device_train_batch_size=4,
+        per_device_train_batch_size=batch_size,
         gradient_accumulation_steps=4,
         warmup_steps=10,
         optim="adamw_8bit",
@@ -92,8 +96,8 @@ def main():
         lr_scheduler_type="cosine",
         save_strategy="epoch",
         logging_steps=1,
-        num_train_epochs=3,
-        max_steps=250,
+        num_train_epochs=num_epochs,
+        max_steps= num_iterations,
         fp16=True,
         push_to_hub=False,
         seed=3407
@@ -102,7 +106,7 @@ def main():
     trainer = SFTTrainer(
         model=model,
         train_dataset=train_dataset,
-        eval_dataset=val_dataset,
+        # eval_dataset=val_dataset,
         args=training_arguments,
         tokenizer=tokenizer,
         packing=False,

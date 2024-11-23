@@ -15,9 +15,9 @@ def format_data(example):
     example["text"] = formatted_train(example["prompt"], example["response"])
     return example
 
-
+dir = '/mnt/DATA/datasets'
 max_seq_length = 2048 # Supports RoPE Scaling interally, so choose any!
-dataset = load_from_disk("final_dataset") # Get dataset
+dataset = load_from_disk(f"{dir}/final_dataset") # Get dataset
 dataset = dataset['train'].map(format_data)
 # model_  = 'llama-2-7b-bnb-4bit'
 model_ = 'mistral-7b-bnb-4bit'
