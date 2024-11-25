@@ -546,6 +546,42 @@ def get_final_dataset(indices):
 
     return train_val_dataset
 
+def get_entire_dataset(indices):
+    print("Getting final dataset that is uploadable to hub...")
+    submixture_train_datasets = []
+    submixture_val_datasets = []
+    
+    for submixture in SUBMIXTURES:
+        submixture_data = DatasetDict.load_from_disk(f"{dir}/flan2022/{submixture}")
+        
+        # Assuming we are working with the "train" split in each submixture
+        train_data = submixture_data['train']
+        
+        submixture_train_datasets.append(
+            train_data.remove_columns(["task_source", "task_name", "template_type"])
+        )
+        submixture_val_datasets.append(
+            submixture_data['test'].remove_columns(["task_source", "task_name", "template_type"])
+        )
+    
+    train_dataset = datasets.concatenate_datasets(submixture_train_datasets)
+    train_dataset = train_dataset.shuffle(seed=23)
+    train_dataset = train_dataset.rename_column("inputs", "prompt")
+    train_dataset = train_dataset.rename_column("targets", "response")
+    
+    val_dataset = datasets.concatenate_datasets(submixture_val_datasets)
+    val_dataset = val_dataset.rename_column("inputs", "prompt")
+    val_dataset = val_dataset.rename_column("targets", "response")
+    
+    train_val_dataset = datasets.DatasetDict({
+        "train": train_dataset,
+        "validation": val_dataset
+    })
+
+    train_val_dataset.save_to_disk('entire_dataset')
+
+    return train_val_dataset
+
 
 def main():
     args=parse_args()
