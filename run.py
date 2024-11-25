@@ -56,10 +56,10 @@ def generate_response(user_input, model, tokenizer):
 
 def main():
     # Define the model you want to finetune
-    model_name = 'Llama-3.2-3B'
+    model_name = 'Llama-2-7b-hf'
     model_id = f"meta-llama/{model_name}"
 
-    run_name = "Initial Run"
+    run_name = f"Running on {model_name}"
 
     # Name of the new model
     output_model=model_name
@@ -74,7 +74,7 @@ def main():
     # Get the training data
     train_dataset = ds['train'].map(format_data)
     num_epochs = 3
-    batch_size = 2
+    batch_size = 1
 
     # Calculate the number of iterations
     num_samples = len(train_dataset)
